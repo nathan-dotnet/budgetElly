@@ -10,13 +10,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useFinance } from "@/context/FinanceContext";
-import { EXPENSE_CATEGORIES, formatCurrency } from "@/lib/finance";
+import { formatCurrency } from "@/lib/finance";
 import { AlertTriangle, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 export function BudgetTracker() {
-  const { budgets, setBudget, removeBudget, getSpentByCategory } = useFinance();
+  const {
+    budgets,
+    setBudget,
+    removeBudget,
+    getSpentByCategory,
+    getCategories,
+  } = useFinance();
   const [category, setCategory] = useState("");
   const [limit, setLimit] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -61,7 +67,7 @@ export function BudgetTracker() {
                 <SelectValue placeholder="Select category" />
               </SelectTrigger>
               <SelectContent>
-                {EXPENSE_CATEGORIES.map((c) => (
+                {getCategories("expense").map((c) => (
                   <SelectItem key={c} value={c}>
                     {c}
                   </SelectItem>
@@ -70,7 +76,7 @@ export function BudgetTracker() {
             </Select>
           </div>
           <div>
-            <Label>Monthly Limit ($)</Label>
+            <Label>Monthly Limit (₱)</Label>
             <Input
               type="number"
               step="0.01"
