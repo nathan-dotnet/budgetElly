@@ -39,7 +39,9 @@ export function TransactionList() {
             </div>
             <span
               className={`font-heading font-semibold text-sm ${
-                tx.type === "income" ? "text-success" : "text-destructive"
+                tx.type === "income"
+                  ? "text-success"
+                  : "text-destructive"
               }`}
             >
               {tx.type === "income" ? "+" : "-"}

@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   EXPENSE_CATEGORIES,
   INCOME_CATEGORIES,
+  isSavingsCategory,
   TransactionType,
 } from "@/lib/finance";
 import { endOfMonth, startOfMonth } from "date-fns";
@@ -60,6 +61,7 @@ interface FinanceContextType {
   totalIncome: number;
   totalExpenses: number;
   balance: number;
+  savings: number;
 
   getSpentByCategory: (category: string) => number;
 
@@ -74,6 +76,8 @@ interface FinanceContextType {
 }
 
 const FinanceContext = createContext<FinanceContextType | null>(null);
+
+const CATEGORY_ICON_SAVINGS_META = "::savings";
 
 export function FinanceProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
@@ -142,8 +146,16 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       (data || []).map((c) => ({
         id: c.id,
         name: c.name,
-        type: c.type as TransactionType,
-        icon: c.icon,
+        type:
+          typeof c.icon === "string" &&
+          c.icon.endsWith(CATEGORY_ICON_SAVINGS_META)
+            ? "savings"
+            : (c.type as TransactionType),
+        icon:
+          typeof c.icon === "string" &&
+          c.icon.endsWith(CATEGORY_ICON_SAVINGS_META)
+            ? c.icon.slice(0, -CATEGORY_ICON_SAVINGS_META.length)
+            : c.icon,
       })),
     );
   };
@@ -170,12 +182,18 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     async (name: string, type: TransactionType, icon: string) => {
       if (!user) return;
 
+      const typeToSave = type === "savings" ? "expense" : type;
+      const iconToSave =
+        type === "savings" && !icon.endsWith(CATEGORY_ICON_SAVINGS_META)
+          ? `${icon}${CATEGORY_ICON_SAVINGS_META}`
+          : icon;
+
       const { error } = await supabase
         .from("categories")
-        .insert({ user_id: user.id, name, type, icon });
+        .insert({ user_id: user.id, name, type: typeToSave, icon: iconToSave });
 
       if (error) {
-        toast.error("Failed to add category");
+        toast.error(`Failed to add category: ${error.message}`);
         return;
       }
 
@@ -198,13 +216,28 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const getCategories = useCallback(
     (type: TransactionType): string[] => {
       const defaults =
-        type === "income" ? [...INCOME_CATEGORIES] : [...EXPENSE_CATEGORIES];
+        type === "income"
+          ? [...INCOME_CATEGORIES]
+          : type === "expense"
+            ? [...EXPENSE_CATEGORIES]
+            : [];
 
       const custom = customCategories
         .filter((c) => c.type === type)
         .map((c) => c.name);
 
-      return [...defaults, ...custom];
+      const savings = customCategories
+        .filter((c) => c.type === "savings" || isSavingsCategory(c.name))
+        .map((c) => c.name);
+
+      return Array.from(
+        new Set([
+          ...defaults,
+          ...custom,
+          ...(type === "expense" ? savings : []),
+          ...(type === "savings" ? savings : []),
+        ]),
+      );
     },
     [customCategories],
   );
@@ -297,15 +330,62 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   /* ================= TOTALS ================= */
 
-  const totalIncome = transactions
+  const savingsCategoryNameSet = new Set(
+    customCategories
+      .filter((c) => c.type === "savings" || isSavingsCategory(c.name))
+      .map((c) => c.name),
+  );
+  const isSavingsName = (name: string) =>
+    savingsCategoryNameSet.has(name) || isSavingsCategory(name);
+
+  const totalExpensesNonSavings = transactions
+    .filter((t) => t.type === "expense" && !isSavingsName(t.category))
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const totalIncomeAll = transactions
     .filter((t) => t.type === "income")
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const totalExpenses = transactions
-    .filter((t) => t.type === "expense")
+  const savingsCategories = Array.from(
+    new Set(
+      transactions
+        .filter((t) => isSavingsName(t.category))
+        .map((t) => t.category),
+    ),
+  );
+
+  const savings = savingsCategories.reduce((sum, category) => {
+    const deposits = transactions
+      .filter((t) => t.type === "income" && t.category === category)
+      .reduce((s, t) => s + t.amount, 0);
+
+    const withdrawals = transactions
+      .filter((t) => t.type === "expense" && t.category === category)
+      .reduce((s, t) => s + t.amount, 0);
+
+    return sum + Math.max(deposits - withdrawals, 0);
+  }, 0);
+
+  const savingsDeposits = transactions
+    .filter((t) => t.type === "income" && isSavingsName(t.category))
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const balance = totalIncome - totalExpenses;
+  const savingsOverdraw = savingsCategories.reduce((sum, category) => {
+    const deposits = transactions
+      .filter((t) => t.type === "income" && t.category === category)
+      .reduce((s, t) => s + t.amount, 0);
+
+    const withdrawals = transactions
+      .filter((t) => t.type === "expense" && t.category === category)
+      .reduce((s, t) => s + t.amount, 0);
+
+    return sum + Math.max(withdrawals - deposits, 0);
+  }, 0);
+
+  const totalIncome = totalIncomeAll - savingsDeposits;
+  const totalExpenses = totalExpensesNonSavings + savingsOverdraw;
+
+  const balance = totalIncome - totalExpenses + savings;
 
   const getSpentByCategory = useCallback(
     (category: string) =>
@@ -336,6 +416,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         totalIncome,
         totalExpenses,
         balance,
+        savings,
         getSpentByCategory,
 
         customCategories,

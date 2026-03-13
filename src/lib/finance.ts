@@ -1,4 +1,10 @@
-export type TransactionType = "income" | "expense";
+export type TransactionType = "income" | "expense" | "savings";
+
+export function isSavingsCategory(category: string) {
+  return category.trim().toLowerCase().startsWith("savings");
+}
+
+export const SAVINGS_CATEGORY = "Savings";
 
 export interface Transaction {
   id: string;

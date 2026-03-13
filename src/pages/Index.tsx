@@ -31,17 +31,17 @@ const Index = () => {
           </div>
         </header>
 
-        <main className="container max-w-5xl mx-auto px-4 py-6 space-y-6">
+        <main className="container max-w-5xl mx-auto px-4 py-6 space-y-4">
           <BalanceCards />
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            <div className="col-span-2 space-y-4">
               <AddTransactionForm />
-              <MonthlyCalendar />
-            </div>
-            <div className="lg:col-span-2 space-y-6">
               <BudgetTracker />
+            </div>
+            <div className="lg:col-span-2 space-y-4">
               <TransactionList />
+              <MonthlyCalendar />
             </div>
           </div>
         </main>

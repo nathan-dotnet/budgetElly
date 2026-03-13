@@ -10,22 +10,45 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useFinance } from "@/context/FinanceContext";
-import { formatCurrency } from "@/lib/finance";
-import { AlertTriangle, Plus, X } from "lucide-react";
+import { formatCurrency, isSavingsCategory } from "@/lib/finance";
+import { AlertTriangle, PiggyBank, Plus, Wallet, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 export function BudgetTracker() {
   const {
+    transactions,
     budgets,
     setBudget,
     removeBudget,
     getSpentByCategory,
     getCategories,
+    customCategories,
+    savings,
   } = useFinance();
+
   const [category, setCategory] = useState("");
   const [limit, setLimit] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [mode, setMode] = useState<"budget" | "savings">("budget");
+
+  const savingsCategoryNameSet = new Set<string>([
+    ...getCategories("savings"),
+    ...customCategories
+      .filter((c) => c.type === "savings" || isSavingsCategory(c.name))
+      .map((c) => c.name),
+  ]);
+  const isSavingsName = (name: string) =>
+    savingsCategoryNameSet.has(name) || isSavingsCategory(name);
+
+  const selectableCategories =
+    mode === "savings"
+      ? getCategories("savings")
+      : getCategories("expense").filter((c) => !isSavingsName(c));
+
+  const visibleBudgets = budgets.filter((b) =>
+    mode === "savings" ? isSavingsName(b.category) : !isSavingsName(b.category),
+  );
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,24 +58,82 @@ export function BudgetTracker() {
       return;
     }
     setBudget(category, parsed);
-    toast.success(`Budget set for ${category}`);
+    toast.success(
+      `${mode === "savings" ? "Goal" : "Budget"} set for ${category}`,
+    );
     setCategory("");
     setLimit("");
     setShowForm(false);
   };
 
+  const getSavedByCategory = (cat: string) => {
+    const deposits = transactions
+      .filter((t) => t.type === "income" && t.category === cat)
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const withdrawals = transactions
+      .filter((t) => t.type === "expense" && t.category === cat)
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    return {
+      saved: Math.max(deposits - withdrawals, 0),
+      overdraw: Math.max(withdrawals - deposits, 0),
+    };
+  };
+
   return (
     <div className="rounded-lg border bg-card animate-fade-in">
       <div className="p-5 border-b flex items-center justify-between">
-        <h3 className="font-heading font-semibold text-lg">Budget Tracker</h3>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setShowForm(!showForm)}
-          className="gap-1"
-        >
-          <Plus className="h-3.5 w-3.5" /> Set Budget
-        </Button>
+        <div className="flex items-center gap-3">
+          <div>
+            <h3 className="font-heading font-semibold text-lg">
+              {mode === "savings" ? "Savings Tracker" : "Budget Tracker"}
+            </h3>
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowForm(!showForm)}
+            className="gap-1"
+          >
+            <Plus className="h-3.5 w-3.5" />{" "}
+            {mode === "savings" ? "Set Goal" : "Set Budget"}
+          </Button>
+          <div className="flex items-center gap-1 rounded-md border bg-muted/30 p-1">
+            <Button
+              type="button"
+              size="icon"
+              variant={mode === "budget" ? "default" : "ghost"}
+              className="h-7 w-7"
+              aria-label="Budget mode"
+              title="Budget"
+              onClick={() => {
+                setMode("budget");
+                setShowForm(false);
+                setCategory("");
+              }}
+            >
+              <Wallet className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant={mode === "savings" ? "default" : "ghost"}
+              className="h-7 w-7"
+              aria-label="Savings mode"
+              title="Savings"
+              onClick={() => {
+                setMode("savings");
+                setShowForm(false);
+                setCategory("");
+              }}
+            >
+              <PiggyBank className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
       </div>
 
       {showForm && (
@@ -61,13 +142,19 @@ export function BudgetTracker() {
           className="p-5 border-b space-y-3 bg-muted/30"
         >
           <div>
-            <Label>Category</Label>
+            <Label>{mode === "savings" ? "Savings Account" : "Category"}</Label>
             <Select value={category} onValueChange={setCategory}>
               <SelectTrigger>
-                <SelectValue placeholder="Select category" />
+                <SelectValue
+                  placeholder={
+                    mode === "savings"
+                      ? "Select savings account"
+                      : "Select category"
+                  }
+                />
               </SelectTrigger>
               <SelectContent>
-                {getCategories("expense").map((c) => (
+                {selectableCategories.map((c) => (
                   <SelectItem key={c} value={c}>
                     {c}
                   </SelectItem>
@@ -76,7 +163,9 @@ export function BudgetTracker() {
             </Select>
           </div>
           <div>
-            <Label>Monthly Limit (₱)</Label>
+            <Label>
+              {mode === "savings" ? "Goal Amount (PHP)" : "Monthly Limit (PHP)"}
+            </Label>
             <Input
               type="number"
               step="0.01"
@@ -87,22 +176,32 @@ export function BudgetTracker() {
             />
           </div>
           <Button type="submit" size="sm">
-            Save Budget
+            Save {mode === "savings" ? "Goal" : "Budget"}
           </Button>
         </form>
       )}
 
       <div className="p-5 space-y-4">
-        {budgets.length === 0 ? (
+        {visibleBudgets.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">
-            No budgets set yet. Set limits per category to track spending.
+            {mode === "savings"
+              ? "No savings goals set yet. Set a goal per account to track progress."
+              : "No budgets set yet. Set limits per category to track spending."}
           </p>
         ) : (
-          budgets.map((b) => {
-            const spent = getSpentByCategory(b.category);
-            const pct = Math.min((spent / b.limit) * 100, 100);
-            const isOver = spent >= b.limit;
-            const isWarning = pct >= 80 && !isOver;
+          visibleBudgets.map((b) => {
+            const spent =
+              mode === "budget" ? getSpentByCategory(b.category) : 0;
+            const { saved, overdraw } =
+              mode === "savings"
+                ? getSavedByCategory(b.category)
+                : { saved: 0, overdraw: 0 };
+
+            const used = mode === "savings" ? saved : spent;
+            const pct = Math.min((used / b.limit) * 100, 100);
+            const isOver = mode === "budget" ? used >= b.limit : false;
+            const isWarning = mode === "budget" ? pct >= 80 && !isOver : false;
+            const remaining = Math.max(b.limit - used, 0);
 
             return (
               <div key={b.category} className="space-y-1.5">
@@ -115,7 +214,8 @@ export function BudgetTracker() {
                       />
                     )}
                     <span className="text-muted-foreground">
-                      {formatCurrency(spent)} / {formatCurrency(b.limit)}
+                      {formatCurrency(remaining)} /{" "}
+                      {formatCurrency(b.limit)}{" "}
                     </span>
                     <Button
                       variant="ghost"
@@ -129,17 +229,36 @@ export function BudgetTracker() {
                 </div>
                 <Progress
                   value={pct}
-                  className={`h-2 ${isOver ? "[&>div]:bg-destructive" : isWarning ? "[&>div]:bg-warning" : "[&>div]:bg-success"}`}
+                  className={`h-2 ${
+                    mode === "savings"
+                      ? "[&>div]:bg-success"
+                      : isOver
+                        ? "[&>div]:bg-destructive"
+                        : isWarning
+                          ? "[&>div]:bg-warning"
+                          : "[&>div]:bg-success"
+                  }`}
                 />
-                {isOver && (
+                {mode === "budget" && isOver && (
                   <p className="text-xs text-destructive font-medium">
                     Over budget by {formatCurrency(spent - b.limit)}!
                   </p>
                 )}
-                {isWarning && (
+                {mode === "budget" && isWarning && (
                   <p className="text-xs text-warning font-medium">
                     {formatCurrency(b.limit - spent)} remaining — approaching
                     limit
+                  </p>
+                )}
+                {mode === "savings" && overdraw > 0 && (
+                  <p className="text-xs text-destructive font-medium">
+                    Overdrawn by {formatCurrency(overdraw)} this month
+                  </p>
+                )}
+                {mode === "savings" && overdraw === 0 && saved >= b.limit && (
+                  <p className="text-xs text-success font-medium">
+                    Goal reached! You&apos;re over by{" "}
+                    {formatCurrency(saved - b.limit)}.
                   </p>
                 )}
               </div>

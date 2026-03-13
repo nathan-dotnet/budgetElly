@@ -1,9 +1,9 @@
 import { useFinance } from "@/context/FinanceContext";
 import { formatCurrency } from "@/lib/finance";
-import { TrendingDown, TrendingUp, Wallet } from "lucide-react";
+import { PiggyBank, TrendingDown, TrendingUp, Wallet } from "lucide-react";
 
 export function BalanceCards() {
-  const { totalIncome, totalExpenses, balance } = useFinance();
+  const { totalIncome, totalExpenses, balance, savings } = useFinance();
 
   const cards = [
     {
@@ -27,10 +27,17 @@ export function BalanceCards() {
       colorClass: "text-destructive",
       bgClass: "bg-destructive/10",
     },
+    {
+      label: "Savings",
+      value: savings,
+      icon: PiggyBank,
+      colorClass: "text-success",
+      bgClass: "bg-success/10",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
       {cards.map((card) => (
         <div
           key={card.label}

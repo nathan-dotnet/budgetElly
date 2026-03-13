@@ -16,8 +16,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useFinance } from "@/context/FinanceContext";
-import { TransactionType } from "@/lib/finance";
-import { ArrowDownLeft, ArrowUpRight, Plus, Settings, X } from "lucide-react";
+import { isSavingsCategory, TransactionType } from "@/lib/finance";
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  PiggyBank,
+  Plus,
+  Settings,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -48,6 +55,7 @@ export function AddTransactionForm() {
     deleteCategory,
   } = useFinance();
   const [type, setType] = useState<TransactionType>("expense");
+  const [isSavings, setIsSavings] = useState(false);
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
   const [note, setNote] = useState("");
@@ -66,7 +74,10 @@ export function AddTransactionForm() {
     setNewCatIcon("📌");
   };
 
-  const categories = getCategories(type);
+  const categories = isSavings
+    ? getCategories("savings")
+    : getCategories(type);
+  const savingsNames = isSavings ? new Set(categories) : null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,29 +86,43 @@ export function AddTransactionForm() {
       toast.error("Enter a valid amount");
       return;
     }
-    if (!category) {
+    const effectiveCategory = category;
+    if (!effectiveCategory) {
       toast.error("Select a category");
       return;
     }
-    addTransaction(type, parsed, category, note || undefined);
-    toast.success(`${type === "income" ? "Income" : "Expense"} added!`);
+    if (isSavings) {
+      if (!savingsNames || savingsNames.size === 0) {
+        toast.error("Add a savings category first (Manage Categories)");
+        return;
+      }
+      if (!savingsNames.has(effectiveCategory)) {
+        toast.error("Select a savings category");
+        return;
+      }
+    }
+    addTransaction(type, parsed, effectiveCategory, note || undefined);
+    toast.success(
+      `${isSavings ? "Savings" : type === "income" ? "Income" : "Expense"} added!`,
+    );
     setAmount("");
     setCategory("");
     setNote("");
   };
 
   return (
-    <div className="rounded-lg border bg-card p-5 animate-fade-in">
+    <div className="rounded-lg border bg-card p-7 animate-fade-in">
       <h3 className="font-heading font-semibold text-lg mb-4">
         Add Transaction
       </h3>
-      <div className="flex gap-2 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
         <Button
           type="button"
-          variant={type === "expense" ? "default" : "outline"}
+          variant={type === "expense" && !isSavings ? "default" : "outline"}
           size="sm"
           onClick={() => {
             setType("expense");
+            setIsSavings(false);
             setCategory("");
           }}
           className="flex-1 gap-1.5"
@@ -106,15 +131,29 @@ export function AddTransactionForm() {
         </Button>
         <Button
           type="button"
-          variant={type === "income" ? "default" : "outline"}
+          variant={type === "income" && !isSavings ? "default" : "outline"}
           size="sm"
           onClick={() => {
             setType("income");
+            setIsSavings(false);
             setCategory("");
           }}
           className="flex-1 gap-1.5"
         >
           <ArrowDownLeft className="h-4 w-4" /> Income
+        </Button>
+        <Button
+          type="button"
+          variant={isSavings ? "default" : "outline"}
+          size="sm"
+          onClick={() => {
+            setType("income");
+            setIsSavings(true);
+            setCategory("");
+          }}
+          className="flex-1 gap-1.5"
+        >
+          <PiggyBank className="h-4 w-4" /> Savings
         </Button>
       </div>
       <form onSubmit={handleSubmit} className="space-y-3">
@@ -148,7 +187,7 @@ export function AddTransactionForm() {
                 </DialogHeader>
                 <div className="space-y-4">
                   <div className="space-y-3">
-                    <div className="flex gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                       <Button
                         type="button"
                         variant={
@@ -170,6 +209,15 @@ export function AddTransactionForm() {
                         className="flex-1"
                       >
                         Income
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={newCatType === "savings" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setNewCatType("savings")}
+                        className="flex-1"
+                      >
+                        Savings
                       </Button>
                     </div>
                     <div>
@@ -240,13 +288,21 @@ export function AddTransactionForm() {
           </div>
           <Select value={category} onValueChange={setCategory}>
             <SelectTrigger>
-              <SelectValue placeholder="Select category" />
+              <SelectValue
+                placeholder={
+                  isSavings ? "Select savings account" : "Select category"
+                }
+              />
             </SelectTrigger>
             <SelectContent>
               {categories.map((c) => {
-                const custom = customCategories.find(
-                  (cc) => cc.name === c && cc.type === type,
-                );
+                const custom = customCategories.find((cc) => {
+                  if (cc.name !== c) return false;
+                  if (isSavings) {
+                    return cc.type === "savings" || isSavingsCategory(cc.name);
+                  }
+                  return cc.type === type;
+                });
                 return (
                   <div key={c} className="relative flex items-center">
                     <SelectItem value={c} className="flex-1 pr-8">
@@ -285,7 +341,7 @@ export function AddTransactionForm() {
         </div>
         <Button type="submit" className="w-full gap-1.5">
           <Plus className="h-4 w-4" /> Add{" "}
-          {type === "income" ? "Income" : "Expense"}
+          {isSavings ? "Savings" : type === "income" ? "Income" : "Expense"}
         </Button>
       </form>
     </div>
