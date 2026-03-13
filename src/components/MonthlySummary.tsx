@@ -1,5 +1,9 @@
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -57,7 +61,11 @@ export function MonthlyCalendar() {
     setMonthYear(selectedYear, selectedMonthIndex + 1);
   };
 
-  const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
+  const daysInMonth = new Date(
+    selectedYear,
+    selectedMonthIndex + 1,
+    0,
+  ).getDate();
 
   // Map transactions to days with type info
   const transactionsByDay: Record<
@@ -180,7 +188,8 @@ export function MonthlyCalendar() {
               <div className="grid grid-cols-3 gap-2">
                 {MONTH_OPTIONS.map((m) => {
                   const isSelected =
-                    pickerYear === selectedYear && m.value === selectedMonthIndex;
+                    pickerYear === selectedYear &&
+                    m.value === selectedMonthIndex;
                   return (
                     <Button
                       key={m.value}
