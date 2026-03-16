@@ -1,17 +1,19 @@
 import { useAuth } from "@/context/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import type { Database } from "@/integrations/supabase/types";
 import {
   EXPENSE_CATEGORIES,
   INCOME_CATEGORIES,
   isSavingsCategory,
   TransactionType,
 } from "@/lib/finance";
-import { endOfMonth, startOfMonth } from "date-fns";
+import { endOfMonth, format, startOfMonth } from "date-fns";
 import {
   createContext,
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
@@ -39,6 +41,7 @@ export interface CustomCategory {
 }
 
 interface FinanceContextType {
+  allTransactions: Transaction[];
   transactions: Transaction[];
   budgets: Budget[];
   loading: boolean;
@@ -51,12 +54,13 @@ interface FinanceContextType {
     amount: number,
     category: string,
     note?: string,
+    date?: Date,
   ) => Promise<void>;
 
   deleteTransaction: (id: string) => Promise<void>;
 
-  setBudget: (category: string, limit: number) => Promise<void>;
-  removeBudget: (category: string) => Promise<void>;
+  setBudget: (category: string, limit: number) => Promise<boolean>;
+  removeBudget: (category: string) => Promise<boolean>;
 
   totalIncome: number;
   totalExpenses: number;
@@ -71,6 +75,12 @@ interface FinanceContextType {
     type: TransactionType,
     icon: string,
   ) => Promise<void>;
+  updateCategory: (
+    id: string,
+    name: string,
+    type: TransactionType,
+    icon: string,
+  ) => Promise<void>;
   deleteCategory: (id: string) => Promise<void>;
   getCategories: (type: TransactionType) => string[];
 }
@@ -78,6 +88,17 @@ interface FinanceContextType {
 const FinanceContext = createContext<FinanceContextType | null>(null);
 
 const CATEGORY_ICON_SAVINGS_META = "::savings";
+const SAVINGS_BUDGET_MONTH = "0001-01-01";
+
+function isMissingBudgetsMonthColumn(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const msg = "message" in err ? (err as { message?: unknown }).message : "";
+  const message = typeof msg === "string" ? msg.toLowerCase() : "";
+  return (
+    message.includes("month") &&
+    (message.includes("does not exist") || message.includes("unknown column"))
+  );
+}
 
 export function FinanceProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
@@ -89,6 +110,27 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   );
   const [loading, setLoading] = useState(true);
   const [selectedMonth, setSelectedMonth] = useState<Date>(new Date());
+  const [hasBudgetsMonthColumn] = useState(true);
+
+  const budgetMonthKey = useMemo(
+    () => format(startOfMonth(selectedMonth), "yyyy-MM-dd"),
+    [selectedMonth],
+  );
+
+  const savingsCategoryNameSet = useMemo(
+    () =>
+      new Set(
+        customCategories
+          .filter((c) => c.type === "savings" || isSavingsCategory(c.name))
+          .map((c) => c.name),
+      ),
+    [customCategories],
+  );
+  const isSavingsName = useCallback(
+    (name: string) =>
+      savingsCategoryNameSet.has(name) || isSavingsCategory(name),
+    [savingsCategoryNameSet],
+  );
 
   /* ================= FETCH DATA ================= */
 
@@ -115,21 +157,73 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     );
   };
 
-  const fetchBudgets = async () => {
-    const { data, error } = await supabase.from("budgets").select("*");
+  const fetchBudgets = useCallback(async () => {
+    if (!user) return;
+
+    const monthStart = startOfMonth(selectedMonth);
+    const monthEnd = endOfMonth(selectedMonth);
+
+    // If the schema doesn't have `month`, we'll keep budgets scoped by created_at.
+    const { data, error } = await supabase
+      .from("budgets")
+      .select("*")
+      .eq("user_id", user.id);
 
     if (error) {
       toast.error("Failed to load budgets");
       return;
     }
 
+    type BudgetRow = {
+      category: string;
+      limit: number;
+      month?: string;
+      created_at?: string;
+    };
+
+    const rawRows = (data || []) as unknown[];
+    const budgetRows: BudgetRow[] = rawRows.map((r) => {
+      const row = r as Record<string, unknown>;
+      return {
+        category: String(row.category),
+        limit: Number(row.limit),
+        month: typeof row.month === "string" ? row.month : undefined,
+        created_at:
+          typeof row.created_at === "string" ? row.created_at : undefined,
+      };
+    });
+
+    const hasMonthColumn = budgetRows.some((r) => typeof r.month === "string");
+
+    let visibleBudgets: BudgetRow[];
+
+    if (hasMonthColumn) {
+      const savingsGoals = budgetRows.filter(
+        (r) => r.month === SAVINGS_BUDGET_MONTH,
+      );
+      const monthBudgets = budgetRows.filter((r) => r.month === budgetMonthKey);
+      visibleBudgets = [...savingsGoals, ...monthBudgets];
+    } else {
+      // Treat budgets as monthly based on created_at; keep savings goals forever.
+      visibleBudgets = budgetRows.filter((r) => {
+        if (isSavingsName(r.category)) return true;
+        if (!r.created_at) return false;
+        const d = new Date(r.created_at);
+        return d >= monthStart && d <= monthEnd;
+      });
+
+      // We keep all budgets in the database to avoid accidentally deleting savings goals.
+      // Visibility is still controlled above by the created_at filter, so older budgets
+      // won't show once the user flips months.
+    }
+
     setBudgets(
-      (data || []).map((b) => ({
+      visibleBudgets.map((b) => ({
         category: b.category,
-        limit: Number(b.limit),
+        limit: b.limit,
       })),
     );
-  };
+  }, [budgetMonthKey, selectedMonth, user, isSavingsName]);
 
   const fetchCategories = async () => {
     const { data, error } = await supabase
@@ -165,16 +259,17 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
     const loadData = async () => {
       setLoading(true);
-      await Promise.all([
-        fetchTransactions(),
-        fetchBudgets(),
-        fetchCategories(),
-      ]);
+      await Promise.all([fetchTransactions(), fetchCategories()]);
       setLoading(false);
     };
 
     loadData();
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchBudgets();
+  }, [fetchBudgets, user]);
 
   /* ================= CATEGORY LOGIC ================= */
 
@@ -194,6 +289,31 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
       if (error) {
         toast.error(`Failed to add category: ${error.message}`);
+        return;
+      }
+
+      await fetchCategories();
+    },
+    [user],
+  );
+
+  const updateCategory = useCallback(
+    async (id: string, name: string, type: TransactionType, icon: string) => {
+      if (!user) return;
+
+      const typeToSave = type === "savings" ? "expense" : type;
+      const iconToSave =
+        type === "savings" && !icon.endsWith(CATEGORY_ICON_SAVINGS_META)
+          ? `${icon}${CATEGORY_ICON_SAVINGS_META}`
+          : icon;
+
+      const { error } = await supabase
+        .from("categories")
+        .update({ name, type: typeToSave, icon: iconToSave })
+        .eq("id", id);
+
+      if (error) {
+        toast.error(`Failed to update category: ${error.message}`);
         return;
       }
 
@@ -250,6 +370,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       amount: number,
       category: string,
       note?: string,
+      date: Date = new Date(),
     ) => {
       if (!user) return;
 
@@ -259,6 +380,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         amount,
         category,
         note: note || null,
+        created_at: date.toISOString(),
       });
 
       if (error) {
@@ -286,38 +408,107 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const setBudget = useCallback(
     async (category: string, limit: number) => {
-      if (!user) return;
+      if (!user) return false;
+
+      const monthToSave = isSavingsName(category)
+        ? SAVINGS_BUDGET_MONTH
+        : budgetMonthKey;
+
+      // If we already know the schema doesn't have `month`, use the legacy payload.
+      const shouldUseLegacy = hasBudgetsMonthColumn === false;
+
+      type BudgetInsertBase = Pick<
+        Database["public"]["Tables"]["budgets"]["Insert"],
+        "user_id" | "category" | "limit"
+      >;
+
+      type BudgetUpsertPayload = BudgetInsertBase & { month?: string };
+
+      const payload: BudgetUpsertPayload = {
+        user_id: user.id,
+        category,
+        limit,
+        ...(shouldUseLegacy ? {} : { month: monthToSave }),
+      };
+
+      const onConflict = shouldUseLegacy
+        ? "user_id,category"
+        : "user_id,category,month";
 
       const { error } = await supabase
         .from("budgets")
-        .upsert(
-          { user_id: user.id, category, limit },
-          { onConflict: "user_id,category" },
-        );
+        .upsert(payload, { onConflict: "user_id,category,month" });
 
       if (error) {
+        if (isMissingBudgetsMonthColumn(error)) {
+          const legacy = await supabase
+            .from("budgets")
+            .upsert(
+              { user_id: user.id, category, limit },
+              { onConflict: "user_id,category" },
+            );
+          if (legacy.error) {
+            toast.error("Failed to set budget");
+            return false;
+          }
+          await fetchBudgets();
+          return true;
+        }
         toast.error("Failed to set budget");
-        return;
+        return false;
       }
 
       await fetchBudgets();
+      return true;
     },
-    [user],
+    [budgetMonthKey, fetchBudgets, hasBudgetsMonthColumn, isSavingsName, user],
   );
 
-  const removeBudget = useCallback(async (category: string) => {
-    const { error } = await supabase
-      .from("budgets")
-      .delete()
-      .eq("category", category);
+  const removeBudget = useCallback(
+    async (category: string) => {
+      if (!user) return false;
 
-    if (error) {
-      toast.error("Failed to remove budget");
-      return;
-    }
+      const monthToDelete = isSavingsName(category)
+        ? SAVINGS_BUDGET_MONTH
+        : budgetMonthKey;
 
-    setBudgets((prev) => prev.filter((b) => b.category !== category));
-  }, []);
+      const shouldUseLegacy = hasBudgetsMonthColumn === false;
+
+      const query = supabase
+        .from("budgets")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("category", category);
+
+      const request = shouldUseLegacy
+        ? query
+        : query.filter("month", "eq", monthToDelete);
+
+      const { error } = await request;
+
+      if (error) {
+        if (isMissingBudgetsMonthColumn(error)) {
+          const legacy = await supabase
+            .from("budgets")
+            .delete()
+            .eq("user_id", user.id)
+            .eq("category", category);
+          if (legacy.error) {
+            toast.error("Failed to remove budget");
+            return false;
+          }
+          await fetchBudgets();
+          return true;
+        }
+        toast.error("Failed to remove budget");
+        return false;
+      }
+
+      await fetchBudgets();
+      return true;
+    },
+    [budgetMonthKey, fetchBudgets, hasBudgetsMonthColumn, isSavingsName, user],
+  );
 
   /* ================= MONTH FILTERING ================= */
 
@@ -330,14 +521,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   /* ================= TOTALS ================= */
 
-  const savingsCategoryNameSet = new Set(
-    customCategories
-      .filter((c) => c.type === "savings" || isSavingsCategory(c.name))
-      .map((c) => c.name),
-  );
-  const isSavingsName = (name: string) =>
-    savingsCategoryNameSet.has(name) || isSavingsCategory(name);
-
+  // Income & expense totals are calculated for the currently selected month so
+  // they reset when the user switches months.
   const totalExpensesNonSavings = transactions
     .filter((t) => t.type === "expense" && !isSavingsName(t.category))
     .reduce((sum, t) => sum + t.amount, 0);
@@ -346,46 +531,47 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     .filter((t) => t.type === "income")
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const savingsCategories = Array.from(
+  const savingsDeposits = transactions
+    .filter((t) => t.type === "income" && isSavingsName(t.category))
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const savingsOverdraw = transactions
+    .filter((t) => t.type === "expense" && isSavingsName(t.category))
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const totalIncome = totalIncomeAll - savingsDeposits;
+  const totalExpenses = totalExpensesNonSavings + savingsOverdraw;
+
+  // Balance & savings are computed across all transactions so they persist
+  // across month changes.
+  const allTimeSavingsCategories = Array.from(
     new Set(
-      transactions
+      allTransactions
         .filter((t) => isSavingsName(t.category))
         .map((t) => t.category),
     ),
   );
 
-  const savings = savingsCategories.reduce((sum, category) => {
-    const deposits = transactions
+  const savings = allTimeSavingsCategories.reduce((sum, category) => {
+    const deposits = allTransactions
       .filter((t) => t.type === "income" && t.category === category)
       .reduce((s, t) => s + t.amount, 0);
 
-    const withdrawals = transactions
+    const withdrawals = allTransactions
       .filter((t) => t.type === "expense" && t.category === category)
       .reduce((s, t) => s + t.amount, 0);
 
     return sum + Math.max(deposits - withdrawals, 0);
   }, 0);
 
-  const savingsDeposits = transactions
-    .filter((t) => t.type === "income" && isSavingsName(t.category))
+  const totalIncomeAllTime = allTransactions
+    .filter((t) => t.type === "income")
     .reduce((sum, t) => sum + t.amount, 0);
-
-  const savingsOverdraw = savingsCategories.reduce((sum, category) => {
-    const deposits = transactions
-      .filter((t) => t.type === "income" && t.category === category)
-      .reduce((s, t) => s + t.amount, 0);
-
-    const withdrawals = transactions
-      .filter((t) => t.type === "expense" && t.category === category)
-      .reduce((s, t) => s + t.amount, 0);
-
-    return sum + Math.max(withdrawals - deposits, 0);
-  }, 0);
-
-  const totalIncome = totalIncomeAll - savingsDeposits;
-  const totalExpenses = totalExpensesNonSavings + savingsOverdraw;
-
-  const balance = totalIncome - totalExpenses + savings;
+  const totalExpensesAllTime = allTransactions
+    .filter((t) => t.type === "expense" && !isSavingsName(t.category))
+    .reduce((sum, t) => sum + t.amount, 0);
+  // Balance should be the net remaining cash (income - expenses), separate from savings.
+  const balance = totalIncomeAllTime - totalExpensesAllTime;
 
   const getSpentByCategory = useCallback(
     (category: string) =>
@@ -400,6 +586,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   return (
     <FinanceContext.Provider
       value={{
+        allTransactions,
         transactions,
         budgets,
         loading,
@@ -421,6 +608,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
         customCategories,
         addCategory,
+        updateCategory,
         deleteCategory,
         getCategories,
       }}

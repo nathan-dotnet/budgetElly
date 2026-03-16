@@ -17,14 +17,13 @@ import { toast } from "sonner";
 
 export function BudgetTracker() {
   const {
-    transactions,
+    allTransactions,
     budgets,
     setBudget,
     removeBudget,
     getSpentByCategory,
     getCategories,
     customCategories,
-    savings,
   } = useFinance();
 
   const [category, setCategory] = useState("");
@@ -50,14 +49,20 @@ export function BudgetTracker() {
     mode === "savings" ? isSavingsName(b.category) : !isSavingsName(b.category),
   );
 
-  const handleAdd = (e: React.FormEvent) => {
+  const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     const parsed = parseFloat(limit);
     if (!category || !parsed || parsed <= 0) {
       toast.error("Enter a valid category and limit");
       return;
     }
-    setBudget(category, parsed);
+
+    const success = await setBudget(category, parsed);
+    if (!success) {
+      toast.error("Failed to save budget");
+      return;
+    }
+
     toast.success(
       `${mode === "savings" ? "Goal" : "Budget"} set for ${category}`,
     );
@@ -67,11 +72,11 @@ export function BudgetTracker() {
   };
 
   const getSavedByCategory = (cat: string) => {
-    const deposits = transactions
+    const deposits = allTransactions
       .filter((t) => t.type === "income" && t.category === cat)
       .reduce((sum, t) => sum + t.amount, 0);
 
-    const withdrawals = transactions
+    const withdrawals = allTransactions
       .filter((t) => t.type === "expense" && t.category === cat)
       .reduce((sum, t) => sum + t.amount, 0);
 
@@ -252,7 +257,7 @@ export function BudgetTracker() {
                 )}
                 {mode === "savings" && overdraw > 0 && (
                   <p className="text-xs text-destructive font-medium">
-                    Overdrawn by {formatCurrency(overdraw)} this month
+                    Overdrawn by {formatCurrency(overdraw)}
                   </p>
                 )}
                 {mode === "savings" && overdraw === 0 && saved >= b.limit && (
